@@ -110,14 +110,127 @@ async function closeRightSidePanel() {
   } catch {}
 }
 
+function buildSidebarControlHtml(isDetached) {
+  const statusLabel = isDetached ? 'Detached in Floating Window' : 'Attached in Right Side Panel';
+  const statusColor = isDetached ? '#00D26A' : '#4F8CFF';
+  const primaryAction = isDetached ? 'reattach' : 'detach';
+  const primaryTitle = isDetached
+    ? 'Reattach Agent to Side Panel'
+    : 'Detach Agent to Floating Window';
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    body {
+      font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, sans-serif);
+      color: var(--vscode-foreground);
+      padding: 14px 12px;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .status-card {
+      padding: 10px 12px;
+      border-radius: 6px;
+      background: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.1));
+      border: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.2));
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: ${statusColor};
+      flex-shrink: 0;
+    }
+    button.primary {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border: none;
+      border-radius: 4px;
+      padding: 9px 12px;
+      font-size: 12.5px;
+      font-weight: 600;
+      cursor: pointer;
+      width: 100%;
+      text-align: center;
+    }
+    button.primary:hover {
+      background: var(--vscode-button-hoverBackground);
+    }
+    .secondary-row {
+      display: flex;
+      gap: 6px;
+    }
+    button.secondary {
+      flex: 1;
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+      border: none;
+      border-radius: 4px;
+      padding: 6px 8px;
+      font-size: 11.5px;
+      cursor: pointer;
+    }
+    button.secondary:hover {
+      background: var(--vscode-button-secondaryHoverBackground);
+    }
+    .hint {
+      font-size: 11.5px;
+      color: var(--vscode-descriptionForeground);
+      line-height: 1.45;
+    }
+    kbd {
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-size: 11px;
+      background: var(--vscode-keybindingLabel-background, rgba(128,128,128,0.18));
+      border: 1px solid var(--vscode-keybindingLabel-border, rgba(128,128,128,0.3));
+    }
+  </style>
+</head>
+<body>
+  <div class="status-card">
+    <span class="dot"></span>
+    <span><strong>Status:</strong> ${statusLabel}</span>
+  </div>
+  <button class="primary" onclick="send('${primaryAction}')">${primaryTitle}</button>
+  <div class="secondary-row">
+    <button class="secondary" onclick="send('detach')">Detach Window</button>
+    <button class="secondary" onclick="send('reattach')">Reattach Side Panel</button>
+  </div>
+  <div class="hint">
+    Shortcut: <kbd>Cmd</kbd> + <kbd>Shift</kbd> + <kbd>A</kbd><br/>
+    Clicking the Activity Bar icon on the left or the button above toggles the floating Agent window at any time.
+  </div>
+  <script>
+    const vscode = acquireVsCodeApi();
+    function send(action) {
+      vscode.postMessage({ type: 'action', action });
+    }
+  </script>
+</body>
+</html>`;
+}
+
 function activate(context) {
   let isTransitioning = false;
   let hasDetachedInThisSession = false;
+  let sidebarWebviewView = undefined;
+  const activatedAt = Date.now();
 
+  // Use high priority (10000) so the Status Bar button stays visible at the far right
+  // even when the bottom Status Bar is crowded with other extension items.
   const statusBarItem = vscode.window.createStatusBarItem(
     'antigravityTab.statusBar',
     vscode.StatusBarAlignment.Right,
-    101
+    10000
   );
   statusBarItem.name = 'Antigravity Agent Window Toggle';
   statusBarItem.command = 'antigravityTab.toggleFloatingWindow';
@@ -135,6 +248,14 @@ function activate(context) {
         'Click (or press Cmd+Shift+A) to detach the Antigravity Agent side panel into a floating window';
     }
     statusBarItem.show();
+
+    try {
+      vscode.commands.executeCommand('setContext', 'antigravityTab.isDetached', isDetached);
+    } catch {}
+
+    if (sidebarWebviewView && sidebarWebviewView.webview) {
+      sidebarWebviewView.webview.html = buildSidebarControlHtml(isDetached);
+    }
   }
 
   /**
@@ -336,6 +457,56 @@ function activate(context) {
     vscode.commands.registerCommand('antigravityTab.reattachToSidePanel', reattachToSidePanel)
   );
 
+  // Register the left Activity Bar view (`antigravityTab.sidebarView`) so users always have
+  // an icon on the side with their other extensions even when the bottom Status Bar is full.
+  const sidebarViewProvider = {
+    resolveWebviewView(webviewView, _resolveContext, _token) {
+      sidebarWebviewView = webviewView;
+      if (webviewView.webview) {
+        webviewView.webview.options = { enableScripts: true };
+        webviewView.webview.html = buildSidebarControlHtml(Boolean(findDetachedAgentTab()));
+        if (typeof webviewView.webview.onDidReceiveMessage === 'function') {
+          webviewView.webview.onDidReceiveMessage(async (msg) => {
+            if (!msg || msg.type !== 'action') {
+              return;
+            }
+            if (msg.action === 'detach') {
+              await detachToFloatingWindow();
+            } else if (msg.action === 'reattach') {
+              await reattachToSidePanel();
+            } else {
+              await toggleFloatingWindow();
+            }
+          });
+        }
+      }
+
+      if (typeof webviewView.onDidChangeVisibility === 'function') {
+        webviewView.onDidChangeVisibility(async () => {
+          if (webviewView.visible) {
+            updateStatusBar();
+            await toggleFloatingWindow();
+          }
+        });
+      }
+
+      // If the user clicked the Activity Bar icon after initial IDE startup (> 1200ms after activate),
+      // immediately toggle the floating window on the first click as well.
+      if (Date.now() - activatedAt > 1200 && webviewView.visible !== false) {
+        toggleFloatingWindow();
+      }
+    }
+  };
+
+  if (
+    vscode.window &&
+    typeof vscode.window.registerWebviewViewProvider === 'function'
+  ) {
+    context.subscriptions.push(
+      vscode.window.registerWebviewViewProvider('antigravityTab.sidebarView', sidebarViewProvider)
+    );
+  }
+
   // If the user closes the floating window directly via its red [x] button or Cmd+W,
   // automatically restore and reconnect the right-hand side panel.
   // IMPORTANT: Moving a tab to a new window via workbench.action.moveEditorToNewWindow
@@ -409,6 +580,7 @@ function activate(context) {
     isDetached: () => Boolean(findDetachedAgentTab()),
     isTransitioning: () => isTransitioning,
     getStatusBarItem: () => statusBarItem,
+    getSidebarViewProvider: () => sidebarViewProvider,
     detachToFloatingWindow,
     reattachToSidePanel,
     toggleFloatingWindow,

@@ -65,6 +65,7 @@ FILES = [
     "LICENSE",
     "media/icon.png",
     "media/icon.svg",
+    "media/activity-bar.svg",
 ]
 
 

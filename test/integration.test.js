@@ -18,6 +18,8 @@ function sleep(ms) {
  */
 function createAntigravityIdeHarness() {
   const registeredCommands = new Map();
+  const registeredWebviewViewProviders = new Map();
+  const contextKeys = new Map();
   const tabChangeListeners = new Set();
   const tabGroupChangeListeners = new Set();
   const commandLog = [];
@@ -605,6 +607,10 @@ function createAntigravityIdeHarness() {
     }
   });
 
+  registeredCommands.set('setContext', async (key, val) => {
+    contextKeys.set(key, val);
+  });
+
   registeredCommands.set('antigravity.dynamic.sidebar.toggleSidebar', async () => {
     commandLog.push('antigravity.dynamic.sidebar.toggleSidebar');
     if (activeWindowId === 2) {
@@ -738,6 +744,14 @@ function createAntigravityIdeHarness() {
       },
       showWarningMessage(msg) {
         commandLog.push(`warning:${msg}`);
+      },
+      registerWebviewViewProvider(viewId, provider) {
+        registeredWebviewViewProviders.set(viewId, provider);
+        return {
+          dispose() {
+            registeredWebviewViewProviders.delete(viewId);
+          }
+        };
       }
     }
   };
@@ -747,6 +761,8 @@ function createAntigravityIdeHarness() {
     jetskiProvider,
     sidebarSurface,
     commandLog,
+    contextKeys,
+    registeredWebviewViewProviders,
     conversationHistory,
     storageItems,
     workspaceStateStore,
@@ -1306,7 +1322,93 @@ async function runIntegrationTests() {
     assert.equal(reload2.api.isDetached(), false, 'Agent should be reattached to side panel');
     console.log('  ✓ Passed\n');
 
-    console.log('ALL 9 INTEGRATION TESTS PASSED SUCCESSFULLY!');
+    // =========================================================================
+    // TEST 10: Left Activity Bar Icon & View + High-Priority Status Bar Item
+    // =========================================================================
+    console.log(
+      'Test 10: Activity Bar icon/view on the side and high-priority Status Bar item work when bottom toolbar is full...'
+    );
+    assert.equal(
+      reload2.api.getStatusBarItem().priority,
+      10000,
+      'Status Bar item should use high priority (10000) so it resists being hidden when the bottom bar is crowded'
+    );
+    const activityBarProvider = harness.registeredWebviewViewProviders.get(
+      'antigravityTab.sidebarView'
+    );
+    assert.ok(
+      activityBarProvider,
+      'Activity Bar WebviewViewProvider (antigravityTab.sidebarView) MUST be registered'
+    );
+
+    const viewMsgListeners = [];
+    const visibilityListeners = [];
+    const mockActivityBarView = {
+      visible: false,
+      webview: {
+        options: {},
+        html: '',
+        onDidReceiveMessage(fn) {
+          viewMsgListeners.push(fn);
+        }
+      },
+      onDidChangeVisibility(fn) {
+        visibilityListeners.push(fn);
+      }
+    };
+
+    activityBarProvider.resolveWebviewView(mockActivityBarView);
+    assert.equal(
+      mockActivityBarView.webview.html.includes('Detach Agent to Floating Window'),
+      true,
+      'Activity Bar view HTML should show Detach Agent to Floating Window when attached'
+    );
+    assert.equal(
+      harness.contextKeys.get('antigravityTab.isDetached'),
+      false,
+      'Context key antigravityTab.isDetached should be false when attached'
+    );
+
+    // Simulate clicking the Activity Bar icon on the left side (making the view visible)
+    mockActivityBarView.visible = true;
+    for (const fn of visibilityListeners) {
+      await fn();
+    }
+    await sleep(150);
+
+    assert.equal(
+      reload2.api.isDetached(),
+      true,
+      'Clicking the Activity Bar icon on the left side should detach the Agent into a floating window'
+    );
+    assert.equal(
+      harness.contextKeys.get('antigravityTab.isDetached'),
+      true,
+      'Context key antigravityTab.isDetached should update to true when detached'
+    );
+    assert.equal(
+      mockActivityBarView.webview.html.includes('Reattach Agent to Side Panel'),
+      true,
+      'Activity Bar view HTML should update to Reattach Agent to Side Panel when detached'
+    );
+
+    // Simulate clicking the Reattach button inside the Activity Bar view
+    for (const fn of viewMsgListeners) {
+      await fn({ type: 'action', action: 'reattach' });
+    }
+    assert.equal(
+      reload2.api.isDetached(),
+      false,
+      'Clicking Reattach inside the Activity Bar view should reattach the Agent to the side panel'
+    );
+    assert.equal(
+      harness.getOpenWindowCount(),
+      1,
+      'Only 1 IDE window should remain open after reattaching via Activity Bar view'
+    );
+    console.log('  ✓ Passed\n');
+
+    console.log('ALL 10 INTEGRATION TESTS PASSED SUCCESSFULLY!');
   } finally {
     Module._load = origLoad;
   }
