@@ -43,6 +43,60 @@ function findDetachedAgentTab() {
   return undefined;
 }
 
+/**
+ * Close any leftover empty or detached-agent auxiliary window tab groups (at index > 0).
+ *
+ * Why this is needed on Reload Window (`workbench.action.reloadWindow`) and Reattach:
+ * - In VS Code / Antigravity IDE, `workbench.editorParts` (`L2n`) always registers `mainPart`
+ *   (the main IDE window) at index 0 (`tabGroups.all[0]`) and any floating `AuxiliaryWindow`
+ *   (`V2n`) at index >= 1.
+ * - When `Developer: Reload Window` runs while the floating Agent window is open, `L2n.saveState()`
+ *   persists the auxiliary window in `editorparts.state`. On reload, `L2n.restoreParts()` reopens
+ *   that auxiliary window, but because `jetski-web.editor` has no `WebviewPanelSerializer`, its
+ *   tab is not restored, leaving a second blank/empty IDE window (`group.tabs.length === 0`) on screen.
+ * - Calling `vscode.window.tabGroups.close(group)` invokes `MainThreadEditorTabs.$closeGroup`,
+ *   which calls `editorGroupsService.removeGroup(group)` -> `V2n.removeGroup()` -> `V2n.doClose()`
+ *   -> `auxiliaryWindow.window.close()`, completely closing the extra floating window.
+ */
+async function closeLeftoverAuxiliaryWindows(specificGroup = undefined) {
+  if (
+    !vscode.window.tabGroups ||
+    !Array.isArray(vscode.window.tabGroups.all) ||
+    typeof vscode.window.tabGroups.close !== 'function'
+  ) {
+    return false;
+  }
+
+  const allGroups = vscode.window.tabGroups.all;
+  const groupsToClose = [];
+
+  for (let i = 1; i < allGroups.length; i++) {
+    const group = allGroups[i];
+    if (!group || !Array.isArray(group.tabs)) {
+      continue;
+    }
+    const isTargetGroup = specificGroup && group === specificGroup;
+    const isEmptyGroup = group.tabs.length === 0;
+    const hasOnlyDetachedAgentTabs =
+      group.tabs.length > 0 && group.tabs.every((t) => isDetachedAgentTab(t));
+
+    if (isTargetGroup || isEmptyGroup || hasOnlyDetachedAgentTabs) {
+      groupsToClose.push(group);
+    }
+  }
+
+  if (groupsToClose.length === 0) {
+    return false;
+  }
+
+  for (const grp of groupsToClose) {
+    try {
+      await vscode.window.tabGroups.close(grp, true);
+    } catch {}
+  }
+  return true;
+}
+
 async function ensureAntigravityExtension() {
   const ext = vscode.extensions.getExtension(AGY_EXTENSION_ID);
   if (ext && !ext.isActive) {
@@ -58,6 +112,7 @@ async function closeRightSidePanel() {
 
 function activate(context) {
   let isTransitioning = false;
+  let hasDetachedInThisSession = false;
 
   const statusBarItem = vscode.window.createStatusBarItem(
     'antigravityTab.statusBar',
@@ -83,6 +138,47 @@ function activate(context) {
   }
 
   /**
+   * Close any leftover floating auxiliary window restored by `Developer: Reload Window`
+   * (`workbench.action.reloadWindow`) or IDE restart so a second empty IDE window never lingers.
+   */
+  async function cleanupReloadedFloatingWindows() {
+    if (hasDetachedInThisSession || isTransitioning) {
+      return false;
+    }
+
+    const detached = findDetachedAgentTab();
+    const hasExtraEmptyGroup =
+      vscode.window.tabGroups &&
+      Array.isArray(vscode.window.tabGroups.all) &&
+      vscode.window.tabGroups.all
+        .slice(1)
+        .some((g) => g && Array.isArray(g.tabs) && g.tabs.length === 0);
+
+    if (!detached && !hasExtraEmptyGroup) {
+      return false;
+    }
+
+    isTransitioning = true;
+    try {
+      if (detached) {
+        try {
+          await vscode.commands.executeCommand('antigravity.moveBetweenEditorAndSidebar');
+        } catch {}
+      }
+      await closeLeftoverAuxiliaryWindows(detached ? detached.group : undefined);
+      if (detached) {
+        try {
+          await vscode.commands.executeCommand('antigravity.panel.focus');
+        } catch {}
+      }
+      return true;
+    } finally {
+      isTransitioning = false;
+      updateStatusBar();
+    }
+  }
+
+  /**
    * Detach the right-hand Antigravity side panel into its own separate floating window,
    * hide the side panel in the main window, and connect the floating window to the IDE.
    */
@@ -91,6 +187,7 @@ function activate(context) {
       return;
     }
 
+    hasDetachedInThisSession = true;
     await ensureAntigravityExtension();
 
     if (findDetachedAgentTab()) {
@@ -186,13 +283,18 @@ function activate(context) {
 
     isTransitioning = true;
     try {
-      const wasDetached = Boolean(findDetachedAgentTab());
+      const detached = findDetachedAgentTab();
+      const wasDetached = Boolean(detached);
       if (wasDetached) {
         // Disposes the detached editor tab (which automatically closes the floating window),
         // switches JetskiWebviewProvider back to sidebarView, and calls renderWebview() +
         // registerWebview(sidebarView, "main") with a single HTML update.
         await vscode.commands.executeCommand('antigravity.moveBetweenEditorAndSidebar');
       }
+
+      // Ensure the floating auxiliary window's TabGroup is completely closed even if
+      // Compact Mode was disabled or `workbench.editor.closeEmptyGroups` is false.
+      await closeLeftoverAuxiliaryWindows(detached ? detached.group : undefined);
 
       // Reveal and focus the right-hand Antigravity side panel in the main window.
       // Do NOT call antigravity.reconnect here when moveBetweenEditorAndSidebar already ran,
@@ -261,6 +363,7 @@ function activate(context) {
 
           isTransitioning = true;
           try {
+            await closeLeftoverAuxiliaryWindows();
             await vscode.commands.executeCommand('antigravity.panel.focus');
             await sleep(100);
             await vscode.commands.executeCommand('antigravity.reconnect');
@@ -273,6 +376,33 @@ function activate(context) {
     );
   }
 
+  // On startup / after `Developer: Reload Window` (`workbench.action.reloadWindow`),
+  // immediately close any leftover restored auxiliary floating window so 2 IDE windows
+  // never remain open after reloading.
+  cleanupReloadedFloatingWindows();
+  for (const delayMs of [100, 300, 700, 1500]) {
+    setTimeout(() => {
+      cleanupReloadedFloatingWindows();
+    }, delayMs);
+  }
+
+  if (
+    vscode.window.tabGroups &&
+    typeof vscode.window.tabGroups.onDidChangeTabGroups === 'function'
+  ) {
+    const startupGroupSub = vscode.window.tabGroups.onDidChangeTabGroups(() => {
+      if (!hasDetachedInThisSession) {
+        cleanupReloadedFloatingWindows();
+      }
+    });
+    context.subscriptions.push(startupGroupSub);
+    setTimeout(() => {
+      try {
+        startupGroupSub.dispose();
+      } catch {}
+    }, 2500);
+  }
+
   updateStatusBar();
 
   return {
@@ -281,15 +411,22 @@ function activate(context) {
     getStatusBarItem: () => statusBarItem,
     detachToFloatingWindow,
     reattachToSidePanel,
-    toggleFloatingWindow
+    toggleFloatingWindow,
+    cleanupReloadedFloatingWindows,
+    closeLeftoverAuxiliaryWindows
   };
 }
 
-function deactivate() {}
+async function deactivate() {
+  try {
+    await closeLeftoverAuxiliaryWindows();
+  } catch {}
+}
 
 module.exports = {
   activate,
   deactivate,
   findDetachedAgentTab,
-  isDetachedAgentTab
+  isDetachedAgentTab,
+  closeLeftoverAuxiliaryWindows
 };

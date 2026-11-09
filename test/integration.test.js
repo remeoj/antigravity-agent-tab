@@ -19,6 +19,7 @@ function sleep(ms) {
 function createAntigravityIdeHarness() {
   const registeredCommands = new Map();
   const tabChangeListeners = new Set();
+  const tabGroupChangeListeners = new Set();
   const commandLog = [];
 
   // Window & UI state
@@ -39,6 +40,13 @@ function createAntigravityIdeHarness() {
   function fireTabChange(opened, closed, changed = []) {
     const event = { opened, closed, changed };
     for (const listener of Array.from(tabChangeListeners)) {
+      listener(event);
+    }
+  }
+
+  function fireTabGroupsChange(opened, closed, changed = []) {
+    const event = { opened, closed, changed };
+    for (const listener of Array.from(tabGroupChangeListeners)) {
       listener(event);
     }
   }
@@ -670,6 +678,43 @@ function createAntigravityIdeHarness() {
               tabChangeListeners.delete(listener);
             }
           };
+        },
+        onDidChangeTabGroups(listener) {
+          tabGroupChangeListeners.add(listener);
+          return {
+            dispose() {
+              tabGroupChangeListeners.delete(listener);
+            }
+          };
+        },
+        async close(groupsOrGroup) {
+          commandLog.push('tabGroups.close');
+          const groups = Array.isArray(groupsOrGroup) ? groupsOrGroup : [groupsOrGroup];
+          for (const group of groups) {
+            if (!group) {
+              continue;
+            }
+            const closedTabs = group.tabs.slice();
+            group.tabs.length = 0;
+            if (closedTabs.length > 0) {
+              fireTabChange([], closedTabs);
+            }
+            // Mirrors `MainThreadEditorTabs.$closeGroup` -> `this._editorGroupsService.removeGroup(s)`
+            // -> `V2n.removeGroup` -> `V2n.doClose(false)` -> `u.window.close()` for auxiliary parts
+            if (group !== mainWindowGroup) {
+              const gIdx = tabGroupsAll.indexOf(group);
+              if (gIdx !== -1) {
+                tabGroupsAll.splice(gIdx, 1);
+                isFloatingWindowCompact = false;
+                isInnerAgentSidebarOpen = false;
+                if (activeWindowId === 2) {
+                  activeWindowId = 1;
+                }
+                fireTabGroupsChange([], [group]);
+              }
+            }
+          }
+          return true;
         }
       },
       createStatusBarItem(id, alignment, priority) {
@@ -707,6 +752,7 @@ function createAntigravityIdeHarness() {
     workspaceStateStore,
     createSimulatedWebviewSurface,
     getActiveWindowId: () => activeWindowId,
+    getOpenWindowCount: () => tabGroupsAll.length,
     isAuxiliaryBarOpen: () => isAuxiliaryBarOpen,
     isFloatingWindowCompact: () => isFloatingWindowCompact,
     isInnerAgentSidebarOpen: () => isInnerAgentSidebarOpen,
@@ -721,6 +767,75 @@ function createAntigravityIdeHarness() {
       if (jetskiProvider.editorPanel) {
         jetskiProvider.editorPanel.dispose();
       }
+    },
+    /**
+     * Simulates `Developer: Reload Window` (`workbench.action.reloadWindow`):
+     * 1. `L2n.saveState()` runs during `onWillSaveState` in the renderer BEFORE Extension Host
+     *    `deactivate()` finishes, persisting `e.auxiliary` in `workspaceMemento["editorparts.state"]`
+     *    if the auxiliary floating window (`V2n`, Window #2) was open when reload began.
+     * 2. Extension Host unloads (disposing old subscriptions).
+     * 3. On reload, `jetski-web.editor` is an ephemeral webview with no `WebviewPanelSerializer`,
+     *    so its editor input is NOT restored (`floatingWindowGroup.tabs = []`), while `L2n.restoreParts()`
+     *    re-creates the empty auxiliary floating window (`V2n`, Window #2) from `editorparts.state`
+     *    either synchronously before extension activation or asynchronously after `asyncRestoreDelayMs`.
+     * 4. `google.google-antigravity` initializes `sidebarView` in the main window (`Window #1`).
+     * 5. `joemerramos.antigravity-agent-tab` activates on reload (`activate(newContext)`).
+     */
+    async simulateDeveloperReloadWindow(extensionMod, oldContext, { asyncRestoreDelayMs = 0 } = {}) {
+      commandLog.push('workbench.action.reloadWindow');
+      const hadAuxiliaryWindowAtSaveState = tabGroupsAll.includes(floatingWindowGroup);
+
+      // Tear down old extension host subscriptions
+      if (oldContext && Array.isArray(oldContext.subscriptions)) {
+        for (const sub of oldContext.subscriptions.splice(0)) {
+          if (sub && typeof sub.dispose === 'function') {
+            sub.dispose();
+          }
+        }
+      }
+
+      // Ephemeral `jetski-web.editor` webview is destroyed on window reload (no serializer)
+      jetskiProvider.editorPanel = undefined;
+      jetskiProvider.isSidebarVisible = true;
+      jetskiProvider.view = sidebarSurface;
+      mainWindowGroup.tabs.length = 0;
+      floatingWindowGroup.tabs.length = 0;
+
+      // Remove floating window temporarily if simulating async `L2n.restoreParts()`
+      const gIdx = tabGroupsAll.indexOf(floatingWindowGroup);
+      if (gIdx !== -1) {
+        tabGroupsAll.splice(gIdx, 1);
+      }
+
+      if (hadAuxiliaryWindowAtSaveState && asyncRestoreDelayMs <= 0) {
+        // Synchronous `L2n.restoreParts()` before extension activation:
+        // Reopens the empty second IDE window (`floatingWindowGroup` with `tabs: []`)
+        tabGroupsAll.push(floatingWindowGroup);
+        activeWindowId = 2;
+      } else {
+        activeWindowId = 1;
+      }
+
+      // `google.google-antigravity` initializes the side panel in Window #1
+      isAuxiliaryBarOpen = true;
+      await jetskiProvider.renderWebview();
+
+      // Activate our extension in the reloaded Extension Host
+      const newContext = { subscriptions: [] };
+      const newApi = extensionMod.activate(newContext);
+
+      if (hadAuxiliaryWindowAtSaveState && asyncRestoreDelayMs > 0) {
+        setTimeout(() => {
+          if (!tabGroupsAll.includes(floatingWindowGroup)) {
+            tabGroupsAll.push(floatingWindowGroup);
+            activeWindowId = 2;
+            fireTabGroupsChange([floatingWindowGroup], []);
+          }
+        }, asyncRestoreDelayMs);
+      }
+
+      await sleep(Math.max(380, asyncRestoreDelayMs + 250));
+      return { context: newContext, api: newApi };
     }
   };
 }
@@ -1071,7 +1186,127 @@ async function runIntegrationTests() {
     buggySurface.dispose();
     console.log('  ✓ Passed\n');
 
-    console.log('ALL 7 INTEGRATION TESTS PASSED SUCCESSFULLY!');
+    // =========================================================================
+    // TEST 8: Developer: Reload Window While Detached Closes Leftover 2nd Window
+    // =========================================================================
+    console.log(
+      'Test 8: Developer: Reload Window while detached closes the leftover 2nd IDE window and restores side panel chat...'
+    );
+    assert.equal(
+      harness.getOpenWindowCount(),
+      2,
+      'Precondition: 2 windows (Main IDE + Floating Agent) are open before reload'
+    );
+
+    const reload1 = await harness.simulateDeveloperReloadWindow(extension, context, {
+      asyncRestoreDelayMs: 0
+    });
+
+    assert.equal(
+      harness.getOpenWindowCount(),
+      1,
+      'Leftover empty 2nd IDE window restored from editorparts.state MUST be closed on reload'
+    );
+    assert.equal(
+      harness.getActiveWindowId(),
+      1,
+      'Main IDE window (Window #1) should be active after reload'
+    );
+    assert.equal(
+      reload1.api.isDetached(),
+      false,
+      'Extension should report attached state after window reload'
+    );
+    assert.equal(
+      reload1.api.getStatusBarItem().text,
+      '$(link-external) Detach Agent',
+      'Status bar should reset to Detach Agent after reload'
+    );
+    assert.equal(
+      harness.isAuxiliaryBarOpen(),
+      true,
+      'Side panel should be open in Main IDE window after reload'
+    );
+    assert.equal(
+      harness.sidebarSurface.isBlankWindow,
+      false,
+      'Side panel should be hydrated and not blank after reload'
+    );
+
+    const postReloadChat = await harness.sidebarSurface.sendChatMessage(
+      'Chat after Developer: Reload Window'
+    );
+    assert.equal(
+      postReloadChat.processed,
+      true,
+      'Side panel chat should process requests normally after Developer: Reload Window'
+    );
+    console.log('  ✓ Passed\n');
+
+    // =========================================================================
+    // TEST 9: Delayed Auxiliary Window Restoration on Reload + Post-Reload Detach/Reattach
+    // =========================================================================
+    console.log(
+      'Test 9: Delayed auxiliary window restoration on reload (async restoreParts) and subsequent detach/reattach cycle...'
+    );
+    await harness.vscodeMock.commands.executeCommand('antigravityTab.toggleFloatingWindow');
+    assert.equal(
+      harness.getOpenWindowCount(),
+      2,
+      'Detaching after reload should open the floating Agent window (2 windows total)'
+    );
+    assert.equal(reload1.api.isDetached(), true, 'Agent should be detached before second reload');
+
+    const reload2 = await harness.simulateDeveloperReloadWindow(extension, reload1.context, {
+      asyncRestoreDelayMs: 120
+    });
+
+    assert.equal(
+      harness.getOpenWindowCount(),
+      1,
+      'Delayed auxiliary window restored 120ms after activate() MUST also be closed automatically'
+    );
+    assert.equal(
+      harness.getActiveWindowId(),
+      1,
+      'Main IDE window (Window #1) should be active after delayed reload cleanup'
+    );
+    assert.equal(
+      reload2.api.isDetached(),
+      false,
+      'Extension should be attached after delayed reload cleanup'
+    );
+
+    // Verify full detach -> chat -> reattach cycle after reload
+    await harness.vscodeMock.commands.executeCommand('antigravityTab.toggleFloatingWindow');
+    await sleep(150);
+    assert.equal(harness.getOpenWindowCount(), 2, 'Floating window should open on detach');
+    assert.equal(reload2.api.isDetached(), true, 'Agent should be detached');
+    assert.equal(
+      harness.jetskiProvider.editorPanel.isBlankWindow,
+      false,
+      'Detached floating window after reload should not be blank'
+    );
+
+    const postReloadDetachedChat = await harness.jetskiProvider.editorPanel.sendChatMessage(
+      'Detached chat after 2nd reload'
+    );
+    assert.equal(
+      postReloadDetachedChat.processed,
+      true,
+      'Detached floating window chat should work after reload'
+    );
+
+    await harness.vscodeMock.commands.executeCommand('antigravityTab.toggleFloatingWindow');
+    assert.equal(
+      harness.getOpenWindowCount(),
+      1,
+      'Reattaching should completely close the floating window (1 window remaining)'
+    );
+    assert.equal(reload2.api.isDetached(), false, 'Agent should be reattached to side panel');
+    console.log('  ✓ Passed\n');
+
+    console.log('ALL 9 INTEGRATION TESTS PASSED SUCCESSFULLY!');
   } finally {
     Module._load = origLoad;
   }

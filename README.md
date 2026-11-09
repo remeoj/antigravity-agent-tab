@@ -11,22 +11,23 @@ A lightweight extension for **Antigravity IDE** that lets you detach the right-h
   - Newly detached floating Agent windows automatically open in **Compact Mode** (`workbench.action.enableCompactAuxiliaryWindow`), hiding the redundant editor tab bar, editor action toolbar, and bottom status bar for a clean standalone Agent window.
 - **Status Bar Toggle Button**:
   - Click **`Detach Agent`** (or **`Reattach Agent`**) in the bottom-right status bar to toggle between the side panel and floating window with a single click.
-- **Automatic Reattachment on Window Close**:
+- **Automatic Reattachment on Window Close & Reload**:
   - Closing the floating window directly via its red `[x]` button or `Cmd + W` automatically restores and reconnects the Agent in the right-hand side panel.
+  - Reloading the IDE window (`Developer: Reload Window`) while detached automatically closes any leftover restored auxiliary window so you never end up with two IDE windows on reload.
 
 ## Installation
 
 ### Option 1: Install via Antigravity IDE CLI
 
 ```bash
-"/Applications/Antigravity IDE.app/Contents/Resources/app/bin/antigravity-ide" --install-extension antigravity-agent-tab-1.1.4.vsix --force
+"/Applications/Antigravity IDE.app/Contents/Resources/app/bin/antigravity-ide" --install-extension antigravity-agent-tab-1.1.5.vsix --force
 ```
 
 ### Option 2: Install from VSIX in the IDE
 
 1. Open **Antigravity IDE**.
 2. Press `Cmd + Shift + P` (or `Ctrl + Shift + P`) and run **`Extensions: Install from VSIX...`**.
-3. Select `antigravity-agent-tab-1.1.4.vsix` and reload the window.
+3. Select `antigravity-agent-tab-1.1.5.vsix` and reload the window.
 
 ## Development & Testing
 
