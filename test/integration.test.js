@@ -24,6 +24,7 @@ function createAntigravityIdeHarness() {
   // Window & UI state
   let activeWindowId = 1; // 1 = Main IDE Window, 2 = Floating Agent Window
   let isAuxiliaryBarOpen = true; // Right-hand Agent side panel in Main Window
+  let isFloatingWindowCompact = false; // Compact Mode state of Floating Agent Window (#2)
   const mainWindowGroup = { viewColumn: 1, windowId: 1, tabs: [] };
   const floatingWindowGroup = { viewColumn: 1, windowId: 2, tabs: [] };
   const tabGroupsAll = [mainWindowGroup];
@@ -529,6 +530,7 @@ function createAntigravityIdeHarness() {
                 if (gIdx !== -1) {
                   tabGroupsAll.splice(gIdx, 1);
                 }
+                isFloatingWindowCompact = false;
                 if (activeWindowId === 2) {
                   activeWindowId = 1;
                 }
@@ -570,6 +572,27 @@ function createAntigravityIdeHarness() {
 
   registeredCommands.set('workbench.action.focusActiveEditorGroup', async () => {
     commandLog.push('workbench.action.focusActiveEditorGroup');
+  });
+
+  registeredCommands.set('workbench.action.enableCompactAuxiliaryWindow', async () => {
+    commandLog.push('workbench.action.enableCompactAuxiliaryWindow');
+    if (activeWindowId === 2) {
+      isFloatingWindowCompact = true;
+    }
+  });
+
+  registeredCommands.set('workbench.action.disableCompactAuxiliaryWindow', async () => {
+    commandLog.push('workbench.action.disableCompactAuxiliaryWindow');
+    if (activeWindowId === 2) {
+      isFloatingWindowCompact = false;
+    }
+  });
+
+  registeredCommands.set('workbench.action.toggleCompactAuxiliaryWindow', async () => {
+    commandLog.push('workbench.action.toggleCompactAuxiliaryWindow');
+    if (activeWindowId === 2) {
+      isFloatingWindowCompact = !isFloatingWindowCompact;
+    }
   });
 
   registeredCommands.set('workbench.action.moveEditorToNewWindow', async () => {
@@ -673,6 +696,7 @@ function createAntigravityIdeHarness() {
     createSimulatedWebviewSurface,
     getActiveWindowId: () => activeWindowId,
     isAuxiliaryBarOpen: () => isAuxiliaryBarOpen,
+    isFloatingWindowCompact: () => isFloatingWindowCompact,
     setActiveFileDiffs: (diffs) => {
       activeFileDiffs = diffs;
     },
@@ -765,6 +789,16 @@ async function runIntegrationTests() {
       harness.getActiveWindowId(),
       2,
       'Detached floating window (Window #2) MUST be in front (active)'
+    );
+    assert.equal(
+      harness.isFloatingWindowCompact(),
+      true,
+      'Detached floating window MUST have Compact Mode enabled by default'
+    );
+    assert.equal(
+      harness.commandLog.includes('workbench.action.enableCompactAuxiliaryWindow'),
+      true,
+      'detachToFloatingWindow MUST execute workbench.action.enableCompactAuxiliaryWindow'
     );
     assert.equal(
       harness.commandLog.includes('antigravity.panel.focus'),

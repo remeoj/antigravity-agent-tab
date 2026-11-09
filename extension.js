@@ -124,8 +124,23 @@ function activate(context) {
         await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
       } catch {}
 
+      // 4. Enable Compact Mode on the detached floating window by default
+      //    (hides the redundant editor tab bar, editor toolbar, and bottom status bar).
+      //    Because `enableCompactAuxiliaryWindow` targets `getActiveWindow().vscodeWindowId`
+      //    (which checks `document.hasFocus()` across auxiliary windows) and is idempotent,
+      //    we invoke it immediately and once more after 100ms once macOS grants OS focus.
+      try {
+        await vscode.commands.executeCommand('workbench.action.enableCompactAuxiliaryWindow');
+      } catch {}
+
+      await sleep(100);
+
+      try {
+        await vscode.commands.executeCommand('workbench.action.enableCompactAuxiliaryWindow');
+      } catch {}
+
       // Wait for any trailing onDidChangeTabs events from moveEditorToNewWindow to settle
-      await sleep(250);
+      await sleep(150);
     } catch (err) {
       vscode.window.showWarningMessage(
         `Could not detach Antigravity Agent to floating window: ${err && err.message ? err.message : err}`

@@ -2,7 +2,7 @@
   "name": "antigravity-agent-tab",
   "displayName": "Antigravity Agent Floating Window",
   "description": "Press Cmd+Shift+A (or click the status bar button) to detach the Antigravity Agent side panel into a separate floating window, or reattach it back into the side panel.",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "publisher": "joemerramos",
   "license": "MIT",
   "repository": {
