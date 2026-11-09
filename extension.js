@@ -139,6 +139,29 @@ function activate(context) {
         await vscode.commands.executeCommand('workbench.action.enableCompactAuxiliaryWindow');
       } catch {}
 
+      // 5. If Antigravity's dynamic sidebar command (`antigravity.dynamic.sidebar.toggleSidebar`
+      //    or `antigravity.dynamic.openSidebar`) is registered, invoke it once the detached
+      //    webview finishes hydrating so the Agent's inner sidebar defaults to open.
+      if (typeof vscode.commands.getCommands === 'function') {
+        setTimeout(async () => {
+          try {
+            if (!findDetachedAgentTab()) {
+              return;
+            }
+            const availableCommands = await vscode.commands.getCommands(true);
+            for (const cmd of [
+              'antigravity.dynamic.openSidebar',
+              'antigravity.dynamic.sidebar.toggleSidebar'
+            ]) {
+              if (Array.isArray(availableCommands) && availableCommands.includes(cmd)) {
+                await vscode.commands.executeCommand(cmd);
+                break;
+              }
+            }
+          } catch {}
+        }, 450);
+      }
+
       // Wait for any trailing onDidChangeTabs events from moveEditorToNewWindow to settle
       await sleep(150);
     } catch (err) {

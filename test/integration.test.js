@@ -25,6 +25,7 @@ function createAntigravityIdeHarness() {
   let activeWindowId = 1; // 1 = Main IDE Window, 2 = Floating Agent Window
   let isAuxiliaryBarOpen = true; // Right-hand Agent side panel in Main Window
   let isFloatingWindowCompact = false; // Compact Mode state of Floating Agent Window (#2)
+  let isInnerAgentSidebarOpen = false; // Inner Agent Sidebar state in Floating Window (#2)
   const mainWindowGroup = { viewColumn: 1, windowId: 1, tabs: [] };
   const floatingWindowGroup = { viewColumn: 1, windowId: 2, tabs: [] };
   const tabGroupsAll = [mainWindowGroup];
@@ -531,6 +532,7 @@ function createAntigravityIdeHarness() {
                   tabGroupsAll.splice(gIdx, 1);
                 }
                 isFloatingWindowCompact = false;
+                isInnerAgentSidebarOpen = false;
                 if (activeWindowId === 2) {
                   activeWindowId = 1;
                 }
@@ -595,6 +597,13 @@ function createAntigravityIdeHarness() {
     }
   });
 
+  registeredCommands.set('antigravity.dynamic.sidebar.toggleSidebar', async () => {
+    commandLog.push('antigravity.dynamic.sidebar.toggleSidebar');
+    if (activeWindowId === 2) {
+      isInnerAgentSidebarOpen = !isInnerAgentSidebarOpen;
+    }
+  });
+
   registeredCommands.set('workbench.action.moveEditorToNewWindow', async () => {
     commandLog.push('workbench.action.moveEditorToNewWindow');
     if (!jetskiProvider.editorPanel) {
@@ -637,6 +646,9 @@ function createAntigravityIdeHarness() {
             registeredCommands.delete(id);
           }
         };
+      },
+      async getCommands() {
+        return Array.from(registeredCommands.keys());
       },
       async executeCommand(id, ...args) {
         const handler = registeredCommands.get(id);
@@ -697,6 +709,7 @@ function createAntigravityIdeHarness() {
     getActiveWindowId: () => activeWindowId,
     isAuxiliaryBarOpen: () => isAuxiliaryBarOpen,
     isFloatingWindowCompact: () => isFloatingWindowCompact,
+    isInnerAgentSidebarOpen: () => isInnerAgentSidebarOpen,
     setActiveFileDiffs: (diffs) => {
       activeFileDiffs = diffs;
     },
@@ -823,12 +836,17 @@ async function runIntegrationTests() {
     console.log(
       'Test 3: Detached floating window completes StorageGetItems -> OnAntigravityReady handshake (not blank) and processes chat...'
     );
-    // Wait for the floating window's 320ms iframe load + StorageGetItems handshake to complete
-    await sleep(120);
+    // Wait for the floating window's 320ms iframe load + StorageGetItems handshake + 450ms sidebar toggle to complete
+    await sleep(360);
 
     const floatingPanel = harness.jetskiProvider.editorPanel;
     assert.ok(floatingPanel, 'Floating editorPanel should exist');
     assert.equal(floatingPanel.windowId, 2, 'Floating editorPanel should be in Window #2');
+    assert.equal(
+      harness.isInnerAgentSidebarOpen(),
+      true,
+      'Floating window MUST invoke antigravity.dynamic.sidebar.toggleSidebar when available'
+    );
     assert.equal(
       floatingPanel.hasStuckPendingFrame,
       false,

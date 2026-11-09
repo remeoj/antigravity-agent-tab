@@ -19,14 +19,14 @@ A lightweight extension for **Antigravity IDE** that lets you detach the right-h
 ### Option 1: Install via Antigravity IDE CLI
 
 ```bash
-"/Applications/Antigravity IDE.app/Contents/Resources/app/bin/antigravity-ide" --install-extension antigravity-agent-tab-1.1.3.vsix --force
+"/Applications/Antigravity IDE.app/Contents/Resources/app/bin/antigravity-ide" --install-extension antigravity-agent-tab-1.1.4.vsix --force
 ```
 
 ### Option 2: Install from VSIX in the IDE
 
 1. Open **Antigravity IDE**.
 2. Press `Cmd + Shift + P` (or `Ctrl + Shift + P`) and run **`Extensions: Install from VSIX...`**.
-3. Select `antigravity-agent-tab-1.1.3.vsix` and reload the window.
+3. Select `antigravity-agent-tab-1.1.4.vsix` and reload the window.
 
 ## Development & Testing
 
